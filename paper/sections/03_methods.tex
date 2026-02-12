@@ -1,0 +1,225 @@
+% =============================================================================
+% Section 3: Materials and Methods
+% Target: ~2500-3000 words, 7 subsections
+% =============================================================================
+
+This section presents the dataset, model architecture, attention extraction mechanism, spatial token bookkeeping system, visualization methods, counterfactual experiment design, and evaluation metrics that constitute our framework.
+
+\subsection{Dataset}
+
+We train and evaluate our model on the Waymo Open Motion Dataset (WOMD) v1.2~\cite{ettinger2021waymo}, one of the largest and most diverse public benchmarks for trajectory prediction. The full dataset contains approximately 89,000 driving scenes recorded across six U.S. cities. Each scene spans 91 frames captured at 10~Hz (9.1 seconds of real-world driving), providing dense temporal coverage of traffic interactions. We use a 20\% subset of the full dataset, yielding approximately 17,800 scenes, split into 85\% training (${\sim}$15,130 scenes) and 15\% validation (${\sim}$2,670 scenes) using hash-based scene-ID partitioning for reproducibility.
+
+Each scene accommodates up to 100 agent slots, covering three agent types: vehicles, pedestrians, and cyclists. Every agent is represented as a trajectory with per-frame attributes including position, velocity, acceleration, heading, and bounding box dimensions. Importantly, the dataset provides rich map context: a lane graph encoding road topology with successor, predecessor, and left/right neighbor relationships among lane segments; per-lane attributes including speed limits, lane types, and boundary markings; and traffic signal states recorded per frame per controlled lane. This structured map representation is critical for our visualization framework, as it enables projecting abstract map-token attention weights back onto physically meaningful road geometry.
+
+We preprocess the raw data into per-scene \texttt{pkl} files, each storing a dictionary with three primary entries: \texttt{objects[]}, containing per-agent trajectory arrays and metadata; \texttt{lane\_graph\{\}}, encoding lane centerline polylines together with their topological connectivity and attributes; and \texttt{traffic\_lights[]}, recording per-frame signal states for each controlled lane. This dictionary structure facilitates both efficient batched training and the counterfactual scene editing experiments described in Section~\ref{sec:counterfactual}.
+
+
+\subsection{MTR-Lite Architecture}
+
+Our trajectory prediction model, MTR-Lite, is a lightweight variant of the Motion Transformer (MTR)~\cite{shi2022mtr, shi2024mtrpp} designed for interpretability research on a single-GPU workstation. The model comprises 8.48M parameters and follows an encode--attend--decode pipeline with four stages: polyline encoding, scene encoding, motion decoding, and mode selection.
+
+\subsubsection{Input Representation}
+
+The model ingests two types of polyline inputs. \emph{Agent polylines} represent traffic participants: we select $A{=}32$ agents nearest to the target agent, each described by a polyline of $T_h{=}11$ historical timesteps (1.0~second of history at 10~Hz). Each timestep carries a 29-dimensional feature vector:
+\begin{equation}
+\mathbf{f}_{\mathrm{agent}} = \bigl[\underbrace{x, y}_{2}, \underbrace{x_{-1}, y_{-1}}_{2}, \underbrace{v_x, v_y}_{2}, \underbrace{a_x, a_y}_{2}, \underbrace{\sin\theta, \cos\theta}_{2}, \underbrace{w, l}_{2}, \underbrace{\mathbf{c}_{\mathrm{type}}}_{5}, \underbrace{\mathbf{e}_{\mathrm{time}}}_{11}, \underbrace{z_{\mathrm{ego}}}_{1}\bigr] \in \mathbb{R}^{29},
+\end{equation}
+where $(x, y)$ is the current position, $(x_{-1}, y_{-1})$ the previous-step position, $(v_x, v_y)$ and $(a_x, a_y)$ the velocity and acceleration, $(\sin\theta, \cos\theta)$ the heading encoded as sine--cosine pair, $(w, l)$ the bounding box width and length, $\mathbf{c}_{\mathrm{type}} \in \{0,1\}^5$ a one-hot agent type encoding (vehicle, pedestrian, cyclist, and two reserved classes), $\mathbf{e}_{\mathrm{time}} \in \mathbb{R}^{11}$ a learnable temporal positional embedding, and $z_{\mathrm{ego}} \in \{0,1\}$ a binary indicator of whether the agent is the ego vehicle.
+
+\emph{Map polylines} represent lane centerlines: we select $M{=}64$ lane segments nearest to the target agent, each described by $P{=}20$ points sampled uniformly along the centerline. Each point carries a 9-dimensional feature vector:
+\begin{equation}
+\mathbf{f}_{\mathrm{map}} = \bigl[\underbrace{x, y}_{2}, \underbrace{d_x, d_y}_{2}, \underbrace{\mathbf{g}_{\mathrm{lane}}}_{3}, \underbrace{x_{-1}, y_{-1}}_{2}\bigr] \in \mathbb{R}^{9},
+\end{equation}
+where $(x, y)$ is the point position, $(d_x, d_y)$ the local direction vector, $\mathbf{g}_{\mathrm{lane}} \in \{0,1\}^3$ encodes lane flags (has traffic control, is intersection lane, is turn lane), and $(x_{-1}, y_{-1})$ the coordinates of the preceding point in the polyline.
+
+\subsubsection{PointNet Encoder}
+
+Each polyline---whether agent or map---is independently encoded into a fixed-dimensional token using a PointNet-style architecture~\cite{qi2017pointnet}. A shared-weight multi-layer perceptron (MLP) processes each point along the polyline:
+\begin{equation}
+\text{MLP}_{\mathrm{point}}: \mathbb{R}^{D} \xrightarrow{\text{Linear}} \mathbb{R}^{64} \xrightarrow{\text{ReLU}} \mathbb{R}^{128} \xrightarrow{\text{ReLU}} \mathbb{R}^{256} \xrightarrow{\text{ReLU}} \mathbb{R}^{256},
+\end{equation}
+where $D$ is the input feature dimension (29 for agents, 9 for map). A symmetric max-pooling operation aggregates the per-point features across the polyline's temporal or spatial extent, producing a single 256-dimensional vector that is invariant to point ordering. A post-aggregation MLP refines this representation:
+\begin{equation}
+\text{MLP}_{\mathrm{post}}: \mathbb{R}^{256} \xrightarrow{\text{Linear}} \mathbb{R}^{256} \xrightarrow{\text{ReLU}} \mathbb{R}^{256},
+\end{equation}
+followed by layer normalization~\cite{ba2016layernorm}. The agent and map encoders share this architectural template but maintain separate learned parameters. This stage produces 32 agent tokens and 64 map tokens, each in $\mathbb{R}^{256}$.
+
+\subsubsection{Scene Encoder}
+
+The 96 tokens (32 agent + 64 map) are concatenated into a single sequence and processed by a global self-attention encoder comprising $L_e{=}4$ Transformer encoder layers~\cite{vaswani2017attention}. Each layer applies pre-norm multi-head self-attention with $H{=}8$ heads ($d_k{=}d_v{=}32$) and a position-wise feed-forward network (FFN) with hidden dimension 1024:
+\begin{align}
+\mathbf{z}' &= \mathbf{z} + \text{MultiHead}\bigl(\text{LN}(\mathbf{z}), \text{LN}(\mathbf{z}), \text{LN}(\mathbf{z})\bigr), \\
+\mathbf{z}'' &= \mathbf{z}' + \text{FFN}\bigl(\text{LN}(\mathbf{z}')\bigr),
+\end{align}
+where $\text{LN}(\cdot)$ denotes layer normalization and the residual connections follow the pre-norm convention. Global self-attention allows every token to attend to every other token, enabling agent--agent, agent--map, map--agent, and map--map interactions to emerge naturally. After the final encoder layer, the 96 tokens are split back into 32 encoded agent tokens and 64 encoded map tokens.
+
+\subsubsection{Motion Decoder}
+
+For each target agent, the decoder generates $K_0{=}64$ candidate trajectory modes using an intention-query mechanism inspired by MTR~\cite{shi2022mtr}. Each of the 64 intention queries is initialized by summing (i)~a learned embedding of a 2D anchor point (obtained via $k$-means clustering of training-set trajectory endpoints) with (ii)~a context embedding derived from the target agent's encoded token. The decoder consists of $L_d{=}4$ layers, each performing:
+\begin{enumerate}[leftmargin=*,labelsep=4.9mm]
+\item \textbf{Agent cross-attention}: intention queries attend to the 32 encoded agent tokens, capturing dynamic interactions.
+\item \textbf{Map cross-attention}: intention queries attend to the 64 encoded map tokens, selecting lane-level guidance.
+\item \textbf{Feed-forward network}: position-wise nonlinear transformation with hidden dimension 1024.
+\end{enumerate}
+Each decoder layer is followed by a per-layer trajectory head (for deep supervision) that regresses a trajectory of $T_f{=}80$ future timesteps (8.0~seconds at 10~Hz) and a scalar confidence logit from the refined query embedding. The deep supervision loss weights are $[0.2, 0.2, 0.2, 0.4]$ from the first to the last layer.
+
+\subsubsection{Mode Selection}
+
+From the 64 candidate modes produced by the final decoder layer, we apply distance-based non-maximum suppression (NMS) with a threshold of 2.0~m on trajectory endpoints. This yields $K{=}6$ diverse output modes, each comprising a predicted trajectory $\hat{\mathbf{Y}}_k \in \mathbb{R}^{80 \times 2}$ and a confidence score $\hat{p}_k$. The confidence scores are normalized via softmax to form a probability distribution over modes.
+
+\subsubsection{Training}
+
+The model is trained for 60 epochs with the AdamW optimizer~\cite{loshchilov2019adamw} (learning rate $10^{-4}$, weight decay $0.01$), using a linear warmup over 5 epochs followed by cosine annealing decay. Automatic mixed-precision (AMP) training with float16~\cite{micikevicius2018mixed} is employed throughout. The loss function combines a cross-entropy classification loss over mode scores with a smooth-$\ell_1$ regression loss over trajectory coordinates, applied at every decoder layer with deep supervision. Gradient clipping is set to a maximum norm of 1.0, and training uses batch size 4 with 8-step gradient accumulation (effective batch size 32).
+
+
+\subsection{Attention Extraction Framework}
+
+A central requirement of our visualization pipeline is the ability to extract per-head attention weight matrices from every layer without altering the model's predictions. We accomplish this through custom Transformer layers that extend PyTorch's \texttt{nn.MultiheadAttention} with a lightweight capture mechanism.
+
+\subsubsection{Attention-Capture Layers}
+
+We implement two custom layer classes: \texttt{AttentionCaptureEncoderLayer} for the scene encoder and \texttt{AttentionCaptureDecoderLayer} for the motion decoder. Both accept a boolean flag \texttt{capture\_attention} on their forward pass. When this flag is set to \texttt{True}, the underlying multi-head attention call is invoked with \texttt{need\_weights=True} and \texttt{average\_attn\_weights=False}, causing PyTorch to return the full per-head attention weight tensor rather than discarding it or averaging across heads. When the flag is \texttt{False} (the default during training), no attention weights are computed or stored, incurring zero overhead.
+
+\subsubsection{AttentionMaps Data Structure}
+
+All captured weights from a single forward pass are organized in an \texttt{AttentionMaps} dataclass with three primary fields:
+
+\begin{itemize}[leftmargin=*,labelsep=4.9mm]
+\item \texttt{scene\_attentions}: a list of $L_e{=}4$ tensors, each of shape $(B, H, N, N)$ where $N{=}A{+}M{=}96$, representing per-head self-attention weights at each encoder layer. Each tensor is a row-stochastic matrix (rows sum to 1) in the last dimension.
+\item \texttt{decoder\_agent\_attentions}: a list of $L_d{=}4$ tensors per target agent, each of shape $(B, H, K_0, A)$ where $K_0{=}64$ and $A{=}32$, representing per-head cross-attention from intention queries to agent tokens.
+\item \texttt{decoder\_map\_attentions}: a list of $L_d{=}4$ tensors per target agent, each of shape $(B, H, K_0, M)$ where $M{=}64$, representing per-head cross-attention from intention queries to map tokens.
+\end{itemize}
+
+This structure provides accessor methods for extracting specific submatrices: agent-to-agent attention, agent-to-map attention, map-to-agent attention, and per-mode decoder attention. An \texttt{aggregate\_heads} method supports both mean and max aggregation across heads, and a \texttt{compute\_entropy} method computes Shannon entropy in bits for quantitative analysis.
+
+
+\subsection{Spatial Token Bookkeeping}
+
+\label{sec:spatial_bookkeeping}
+
+The key technical innovation enabling our visualization approach is a \emph{spatial token bookkeeping} system that maintains a bidirectional mapping between the abstract token index space used by the Transformer and the continuous bird's-eye-view (BEV) coordinate space of the physical scene. Without this mapping, attention weights are merely entries in a matrix indexed by opaque integers; with it, each attention value acquires a spatial interpretation.
+
+For each \emph{agent token} $i \in \{0, \ldots, A{-}1\}$, the bookkeeper stores the agent's BEV position $(x_i, y_i)$ at the anchor frame, heading angle $\theta_i$, bounding box dimensions $(w_i, l_i)$, and agent type. For each \emph{map token} $j \in \{0, \ldots, M{-}1\}$, the bookkeeper stores the full lane centerline polyline $\{(x_{j,p}, y_{j,p})\}_{p=1}^{P}$ in BEV coordinates.
+
+This bookkeeping enables two critical operations. First, given a row of the attention matrix (e.g., the ego agent's attention over all 96 scene tokens at encoder layer $l$), we can project each attention value onto its corresponding spatial location, transforming a 96-element vector into a spatially grounded heatmap over the BEV plane. Second, given a decoder cross-attention row for a specific intention query, we can separately project agent attention and map attention onto the BEV, revealing which physical agents and which lane structures guide the model's trajectory prediction for that mode. All coordinate transforms use a configurable BEV grid with resolution 0.5~m/pixel and a 120$\times$120~m field of view centered on the target agent.
+
+
+\subsection{Visualization Methods}
+
+We develop three complementary visualization types, each designed to illuminate a different facet of the model's attention-based reasoning.
+
+\subsubsection{Space-Attention BEV Heatmap}
+
+This visualization answers the question: \emph{where in physical space does the model concentrate its attention?} Given a target agent and a selected encoder or decoder layer, we extract the attention weight vector and project it onto the BEV plane as follows:
+
+\begin{enumerate}[leftmargin=*,labelsep=4.9mm]
+\item For each valid \emph{agent token} $i$ with attention weight $\alpha_i$ (averaged across $H{=}8$ heads), we render a 2D isotropic Gaussian centered at the agent's BEV position $(x_i, y_i)$ with standard deviation $\sigma{=}3.0$~m:
+\begin{equation}
+G_i(x, y) = \alpha_i \cdot \exp\!\Biggl({-\frac{(x - x_i)^2 + (y - y_i)^2}{2\sigma^2}}\Biggr).
+\end{equation}
+\item For each valid \emph{map token} $j$ with attention weight $\beta_j$, we paint the lane centerline polyline onto the heatmap grid using Bresenham line rasterization with a stroke width of 2.0~m, followed by Gaussian smoothing.
+\item The contributions from all agent and map tokens are accumulated additively into a single heatmap, which is then clipped at the 95th percentile and normalized to $[0, 1]$.
+\item The heatmap is rendered using the \texttt{magma} colormap with $\alpha{=}0.7$ transparency, overlaid on a grayscale BEV rendering of lane boundaries, agent bounding boxes, the target agent's historical trajectory (blue), ground-truth future (green dashes), and predicted trajectories (red).
+\end{enumerate}
+
+\subsubsection{Time-Attention Refinement Diagram}
+
+This visualization answers the question: \emph{how does the model's attention evolve across decoder layers?} For the winning mode (highest-confidence trajectory after NMS), we extract the cross-attention weights from each of the $L_d{=}4$ decoder layers and present them as a four-panel strip chart. Each panel displays a ranked bar chart of the top-10 most-attended tokens (labeled by type and index, e.g., ``Vehicle\_3'', ``Lane\_12''), with a consistent vertical scale across all panels for direct comparability. This visualization reveals the iterative refinement process: early decoder layers typically distribute attention broadly across candidate lanes and nearby agents, while later layers concentrate attention on the selected goal lane and the most interaction-relevant agents.
+
+\subsubsection{Lane-Token Activation Map}
+
+This visualization answers the question: \emph{which lane structures guide the model's trajectory prediction?} For the winning mode at the final decoder layer, we extract the map cross-attention vector $({\beta_1, \ldots, \beta_M})$ and use it to color-code each of the $M{=}64$ lane centerline polylines on the BEV. High-attention lanes are rendered in warm colors (red--yellow) with thick strokes, while low-attention lanes are rendered in cool colors (blue--green) with thin strokes, using a diverging colormap. An accompanying sidebar bar chart ranks the top-10 lanes by attention weight. This visualization directly reveals the model's lane selection strategy and can be compared against the ground-truth future trajectory to assess whether the model attends to the correct lane.
+
+
+\subsection{Counterfactual Experiment Methodology}
+\label{sec:counterfactual}
+
+Beyond observational attention analysis, we design controlled counterfactual experiments that isolate the causal effect of specific scene elements on the model's attention distribution and trajectory predictions. The core methodology is as follows.
+
+\subsubsection{Scene Editing}
+
+Because our data are stored as \texttt{pkl} dictionaries, counterfactual scenes are created by direct manipulation of the dictionary entries. Three editing operations are supported:
+\begin{itemize}[leftmargin=*,labelsep=4.9mm]
+\item \textbf{Agent removal}: setting a target agent's valid mask to \texttt{False} across all timesteps, effectively removing it from the scene while preserving all other elements.
+\item \textbf{Traffic light modification}: overwriting the signal state entries for a specified lane from green to red (or vice versa) across relevant frames.
+\item \textbf{Agent injection}: inserting a new agent (e.g., a pedestrian) at a specified BEV position with appropriate kinematic attributes, occupying a previously unused agent slot.
+\end{itemize}
+
+\subsubsection{Controlled Comparison}
+
+Each counterfactual experiment follows an A/B protocol. The original scene $\mathcal{S}$ and the modified scene $\mathcal{S}'$ are both processed through the model in evaluation mode with attention capture enabled. Because the only difference between $\mathcal{S}$ and $\mathcal{S}'$ is the targeted edit, any change in attention or prediction can be attributed to the modified element. We compute attention difference maps:
+\begin{equation}
+\Delta\mathbf{A} = \mathbf{A}(\mathcal{S}') - \mathbf{A}(\mathcal{S}),
+\end{equation}
+where $\mathbf{A}(\cdot)$ denotes the head-averaged attention matrix at a specified layer. Positive entries in $\Delta\mathbf{A}$ indicate tokens that received \emph{more} attention after the modification; negative entries indicate attention \emph{withdrawn} from those tokens.
+
+\subsubsection{Experiment Types}
+
+We conduct three types of counterfactual experiments:
+
+\begin{enumerate}[leftmargin=*,labelsep=4.9mm]
+\item \textbf{Agent removal and attention redistribution}: A key interacting agent (e.g., an oncoming vehicle at an intersection) is removed from the scene. We measure how the attention previously allocated to this agent redistributes across the remaining tokens. The hypothesis is that attention flows to the next-most-relevant agents and lanes, revealing the model's latent priority ordering.
+
+\item \textbf{Traffic light state flip and attention adaptation}: A traffic signal controlling the target agent's lane is toggled from green to red (or red to green). We measure changes in both the attention distribution and the predicted trajectories. The hypothesis is that a green-to-red flip causes increased attention to the stop line and deceleration in the predicted trajectory.
+
+\item \textbf{VRU injection at varying distances}: A pedestrian is injected at distances of $d \in \{5, 10, 15, 20, 30, 50\}$~meters from the target agent's predicted path. We measure the attention allocated to the injected pedestrian as a function of distance, identifying the distance threshold below which the model begins to attend to the VRU. This experiment directly quantifies the model's safety-relevant perception range for vulnerable road users.
+\end{enumerate}
+
+
+\subsection{Evaluation Metrics}
+
+Our evaluation employs two families of metrics: standard trajectory prediction metrics to validate model competence, and attention-specific metrics to quantify the interpretability and safety relevance of attention patterns.
+
+\subsubsection{Trajectory Prediction Metrics}
+
+We report three standard metrics, each computed over $K{=}6$ predicted modes:
+\begin{itemize}[leftmargin=*,labelsep=4.9mm]
+\item \textbf{Minimum Average Displacement Error (minADE@6)}: the minimum over all $K$ modes of the mean $\ell_2$ distance between predicted and ground-truth positions across all future timesteps:
+\begin{equation}
+\text{minADE@}K = \min_{k \in \{1,\ldots,K\}} \frac{1}{T_f} \sum_{t=1}^{T_f} \bigl\|\hat{\mathbf{y}}_k^{(t)} - \mathbf{y}^{(t)}\bigr\|_2.
+\end{equation}
+
+\item \textbf{Minimum Final Displacement Error (minFDE@6)}: the minimum over all $K$ modes of the $\ell_2$ distance at the final timestep:
+\begin{equation}
+\text{minFDE@}K = \min_{k \in \{1,\ldots,K\}} \bigl\|\hat{\mathbf{y}}_k^{(T_f)} - \mathbf{y}^{(T_f)}\bigr\|_2.
+\end{equation}
+
+\item \textbf{Miss Rate (MR@6)}: the fraction of samples for which $\text{minFDE@}K$ exceeds a threshold of 2.0~m:
+\begin{equation}
+\text{MR@}K = \frac{1}{|\mathcal{D}|} \sum_{i \in \mathcal{D}} \mathbb{1}\bigl[\text{minFDE@}K_i > 2.0 \text{ m}\bigr].
+\end{equation}
+\end{itemize}
+
+\subsubsection{Attention Analysis Metrics}
+
+To quantify attention properties beyond visual inspection, we employ:
+
+\begin{itemize}[leftmargin=*,labelsep=4.9mm]
+\item \textbf{Shannon Entropy}: measures the uniformity of an attention distribution $\boldsymbol{\alpha} = (\alpha_1, \ldots, \alpha_N)$:
+\begin{equation}
+H(\boldsymbol{\alpha}) = -\sum_{i=1}^{N} \alpha_i \log_2 \alpha_i \quad [\text{bits}].
+\end{equation}
+An entropy of $\log_2 N$ indicates perfectly uniform attention; low entropy indicates focused attention. We track entropy across layers to quantify the progressive focusing hypothesis.
+
+\item \textbf{Gini Coefficient} (defined here for completeness; our current analysis focuses on Shannon entropy): measures the inequality (sparsity) of the attention distribution. For a sorted attention vector $\alpha_{(1)} \leq \cdots \leq \alpha_{(N)}$, the Gini coefficient is:
+\begin{equation}
+G(\boldsymbol{\alpha}) = \frac{2\sum_{i=1}^{N} i \cdot \alpha_{(i)}}{N \sum_{i=1}^{N} \alpha_{(i)}} - \frac{N+1}{N}.
+\end{equation}
+A Gini coefficient of 0 corresponds to uniform attention; a value approaching 1 indicates that virtually all attention is concentrated on a single token.
+
+\item \textbf{Attention-to-Ground-Truth-Lane Correlation} (defined as part of the analysis toolkit; our current study focuses on entropy and agent/map attention decomposition): for each sample, we identify the ground-truth lane (the lane polyline minimizing mean point-to-polyline distance to the future trajectory) and extract the decoder's attention weight to this lane token. We then compute the Pearson correlation coefficient between this attention weight and the sample's minADE@6 across the validation set. A significant negative correlation ($r < 0$, $p < 0.05$) would indicate that higher attention to the correct lane is associated with lower prediction error.
+\end{itemize}
+
+\subsubsection{VRU Safety Metrics}
+
+To quantify safety-relevant attention properties for vulnerable road users (VRUs), we define:
+
+\begin{itemize}[leftmargin=*,labelsep=4.9mm]
+\item \textbf{Attention Ratio}: the ratio of mean attention allocated to a pedestrian token versus a vehicle token at the same distance $d$ from the target agent's predicted path:
+\begin{equation}
+R_{\mathrm{attn}}(d) = \frac{\mathbb{E}[\alpha_{\mathrm{ped}}(d)]}{\mathbb{E}[\alpha_{\mathrm{veh}}(d)]}.
+\end{equation}
+A ratio of 1.0 indicates parity; values below 1.0 indicate systematic under-attention to pedestrians relative to vehicles.
+
+\item \textbf{Attention Threshold for Collision Avoidance}: using the VRU injection experiments at varying distances, we identify the critical distance $d^*$ at which the injected pedestrian's attention weight first exceeds a predefined threshold (defined as twice the mean background attention level). Distances $d > d^*$ represent a potential blind zone where the model may fail to account for the VRU in its predictions.
+\end{itemize}

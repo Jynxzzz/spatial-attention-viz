@@ -1,0 +1,9 @@
+matplotlib
+networkx
+numpy
+Pillow
+pytorch-lightning
+pytest
+scipy
+torch
+PyYAML

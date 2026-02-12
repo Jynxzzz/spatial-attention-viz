@@ -1,0 +1,223 @@
+% =============================================================================
+% Section 4: Results
+% =============================================================================
+
+\subsection{Trajectory Prediction Performance}
+
+Table~\ref{tab:main_results} presents the trajectory prediction performance of MTR-Lite on the Waymo Open Motion Dataset validation set, compared against a Constant Velocity (CV) baseline that linearly extrapolates each agent's last observed velocity. We report results at three prediction horizons (3, 5, and 8 seconds) to characterize both short-term and long-term forecasting accuracy. The CV baseline provides a physics-based lower bound: any learned model that cannot outperform simple linear extrapolation offers no value beyond Newtonian kinematics.
+
+\begin{table}[htbp]
+\caption{Trajectory prediction performance on the Waymo Open Motion Dataset (20\% training subset, full validation set with 13{,}388 scenes and 99{,}370 agent predictions). $K=6$ modes, 8-second horizon (80 timesteps at 10~Hz). The Constant Velocity baseline is deterministic ($K=1$), so minADE@$K$ = ADE@1 for all $K$.}
+\label{tab:main_results}
+\centering
+\small
+\begin{tabular}{lccccccc}
+\toprule
+\textbf{Model} & \textbf{Params} & \textbf{minADE@6} & \textbf{minFDE@6} & \textbf{MR@6} & \textbf{ADE@3s} & \textbf{ADE@5s} & \textbf{ADE@8s} \\
+\midrule
+Constant Velocity & --- & 5.071 & 14.131 & 0.568 & 0.943 & 2.356 & 5.071 \\
+\midrule
+\textbf{MTR-Lite} & 8.48M & 2.314 & 6.401 & 0.546 & 0.757 & 1.237 & 2.314 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+MTR-Lite reduces the 8-second ADE by 54.4\% relative to the CV baseline (2.314\,m vs.\ 5.071\,m) and the FDE by 54.7\% (6.401\,m vs.\ 14.131\,m), confirming that the Transformer architecture captures interaction and map-conditioned dynamics far beyond linear extrapolation. Notably, the improvement is most pronounced at longer horizons: the ADE reduction grows from 19.7\% at 3 seconds (0.757\,m vs.\ 0.943\,m) to 47.5\% at 5 seconds (1.237\,m vs.\ 2.356\,m) and 54.4\% at 8 seconds, demonstrating that the model's learned scene understanding is especially valuable for long-horizon forecasting where linear assumptions break down. The miss rate is comparable (54.6\% vs.\ 56.8\%) because the 2.0\,m threshold is stringent even for the learned model on an 8-second horizon.
+
+\begin{table}[htbp]
+\caption{Per-agent-type performance breakdown on the full validation set. Cyclists exhibit significantly higher prediction difficulty with 88.1\% miss rate, reflecting their unique combination of vehicle-like speeds and pedestrian-like maneuverability.}
+\label{tab:per_agent_type}
+\centering
+\small
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Agent Type} & \textbf{minADE@6} & \textbf{minFDE@6} & \textbf{MR@6} & \textbf{Count} \\
+\midrule
+Vehicle & 2.331 & 6.470 & 0.540 & 93{,}801 \\
+Pedestrian & 1.579 & 3.881 & 0.594 & 4{,}536 \\
+Cyclist & 3.931 & 11.133 & 0.881 & 1{,}033 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:per_agent_type} presents the performance breakdown by agent type. While vehicles (94.4\% of the dataset) and pedestrians achieve moderate miss rates around 54--59\%, cyclists stand out as the most challenging category with an 88.1\% miss rate. This elevated difficulty reflects cyclists' unique behavioral characteristics: they combine vehicle-like speeds (enabling rapid position changes over the 8-second horizon) with pedestrian-like maneuverability (allowing sudden direction changes and lane-crossing behavior). The cyclist category's underrepresentation in the training data (only 1.0\% of predictions) further compounds the prediction challenge, supporting the failure diagnosis finding in Section~\ref{sec:failure_results} that underrepresented agent types are systematically harder to predict.
+
+
+\FloatBarrier
+\subsection{Spatial Attention Visualization}
+
+Figure~\ref{fig:spatial_composite} presents the core contribution of our visualization framework: spatial attention overlays projected onto bird's-eye-view traffic scenes. Each panel shows the combined agent-token Gaussian splatting and lane-token attention painting for a different scene type.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{fig_spatial_attention_composite}
+    \caption{Spatial attention visualization across three scene types. (a)~Dense intersection with 17 agents: attention spreads broadly across the intersection center and approaching lanes, reflecting the model's need to monitor multiple potential conflict points. (b)~Low-density scene with 5 agents: attention concentrates tightly along the target agent's forward path and immediate surroundings. (c)~Mixed traffic with pedestrians: attention covers the road network with notable hotspots near the pedestrian (orange circle). Gaussian splatting ($\sigma = 3.0$\,m) is used for agent tokens; lane attention is painted along centerlines. Colorbar indicates normalized attention weight.}
+    \label{fig:spatial_composite}
+\end{figure}
+
+Several qualitative patterns emerge from the spatial overlays. In the dense intersection scene (Figure~\ref{fig:spatial_composite}a), the attention heatmap covers the entire intersection region, with particularly high activation at the intersection center where multiple trajectories converge. Attention extends along all approaching lanes, consistent with the model monitoring potential conflict points from every direction. In contrast, the low-density scene (Figure~\ref{fig:spatial_composite}b) shows a markedly narrower attention distribution concentrated along the target agent's forward path. The model allocates minimal attention to distant or lateral regions, reflecting the reduced complexity of the scene. The mixed-traffic scene (Figure~\ref{fig:spatial_composite}c) shows broadly distributed attention across the road network with visible hotspots near the pedestrian location, suggesting the model registers the presence of vulnerable road users in its spatial reasoning.
+
+Figure~\ref{fig:bev_detail} provides a detailed single-scene view of the intersection scenario, illustrating how the combined agent and lane attention forms a coherent spatial attention field.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.7\textwidth]{fig_bev_attention_scene1}
+    \caption{Detailed spatial attention overlay for an intersection scenario (17 agents, 46 lanes). The ego vehicle (blue triangle) is located at the center. Attention is highest along the forward trajectory path and at the intersection center, with secondary peaks at nearby vehicles and approaching lanes. Blue squares denote vehicles; the green dashed line shows ground truth; the red solid line shows the best predicted trajectory.}
+    \label{fig:bev_detail}
+\end{figure}
+
+
+\FloatBarrier
+\subsection{Layer-Wise Attention Evolution}\label{sec:entropy_results}
+
+To quantify how attention evolves across processing layers, we compute the Shannon entropy $H = -\sum_j w_j \log_2 w_j$ of the attention distribution for each encoder layer, averaged across 100--200 validation scenes. Figure~\ref{fig:entropy_evolution} presents the results.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{fig_entropy_evolution}
+    \caption{Layer-wise attention analysis across the four encoder layers. (a)~Shannon entropy reveals a non-monotonic pattern: entropy decreases from Layer~0 (5.64 bits) through Layer~2 (5.36 bits) as the model focuses on relevant agents, but Layer~3 reverses to 5.92 bits. The dashed line marks maximum entropy for 96 tokens ($\log_2 96 = 6.58$ bits). (b)~Agent vs.\ map attention share explains the reversal: Layers~0--2 progressively increase agent attention (49.7\%$\to$62.4\%), while Layer~3 pivots to 63.6\% map attention, broadening its scope to incorporate road geometry for trajectory generation.}
+    \label{fig:entropy_evolution}
+\end{figure}
+
+The key finding is a \emph{non-monotonic} entropy pattern that contradicts the naive expectation of simple progressive focusing. Layers~0 through 2 progressively decrease entropy (5.64$\to$5.50$\to$5.36 bits) while increasing agent attention share (49.7\%$\to$55.1\%$\to$62.4\%), consistent with the model narrowing its focus onto the most relevant traffic agents. However, Layer~3 reverses this trend: entropy increases to 5.92 bits and the attention composition flips to 63.6\% map tokens. This pattern suggests a two-phase processing strategy: \emph{agent interaction modeling} (Layers~0--2) followed by \emph{map-conditioned trajectory planning} (Layer~3), where the final layer broadens attention to incorporate the road geometry needed for generating lane-following trajectories.
+
+
+\subsection{Attention Head Specialization}
+
+While the layer-wise analysis reveals aggregate attention patterns, it obscures within-layer heterogeneity across attention heads. To investigate whether individual heads specialize in different aspects of scene understanding, we compute per-head agent-to-map attention ratios and visualize their spatial attention patterns. Figure~\ref{fig:head_disentanglement} presents the results.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{fig_head_disentanglement}
+    \caption{Attention head specialization analysis. (a)~Per-head agent-to-map attention ratio across all four encoder layers (8 heads per layer, 32 bars total). Layer~3 exhibits the strongest head-wise disentanglement, with Head~5 allocating 93.3\% of its attention to map tokens while Head~3 maintains 58.8\% agent attention. (b)~BEV spatial attention heatmaps for the three most agent-focused heads versus the three most map-focused heads in Layer~3, demonstrating qualitatively distinct attention patterns.}
+    \label{fig:head_disentanglement}
+\end{figure}
+
+The head-wise analysis reveals functional specialization that is invisible in aggregate layer statistics. While Section~\ref{sec:entropy_results} showed that Layer~3 shifts to 63.6\% map attention overall, this transition is not uniform across heads. Head~5 in Layer~3 allocates 93.3\% of its attention to map tokens, strongly focusing on lane geometry and road boundaries. In contrast, Head~3 retains 58.8\% agent attention---acting as an ``agent sentinel'' that preserves social context even as other heads pivot toward spatial planning. The spread between the most agent-focused and most map-focused heads in Layer~3 reaches 52.1 percentage points, confirming that the layer's aggregate map-dominance conceals substantial functional diversity.
+
+The spatial heatmaps in Figure~\ref{fig:head_disentanglement}b illustrate this disentanglement qualitatively. Map-focused heads produce attention that aligns tightly with lane centerlines and extends along the road network, while agent-focused heads concentrate on vehicle clusters and intersection conflicts. This head-level specialization suggests that the model learns complementary representations within each layer: some heads track dynamic agents, others encode static geometry, and the final decoder aggregates both sources of information. The persistence of agent-specialized heads in Layer~3 contradicts a naive interpretation of the layer as purely map-focused, revealing instead a collaborative division of labor across attention heads.
+
+
+\FloatBarrier
+\subsection{Lane-Token Activation Analysis}
+
+Figure~\ref{fig:lane_activation} visualizes the cumulative decoder map-attention projected onto the lane topology, revealing which road structures the model prioritizes when generating trajectory predictions.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{fig_lane_activation}
+    \caption{Lane-token activation map for an intersection scenario. \textbf{Left:} BEV with lanes colored by cumulative decoder map-attention (warm = high, cool = low), with line width proportional to attention weight. The two highest-attended lanes (606 and 594) align closely with the ego vehicle's forward trajectory (green dashed line). \textbf{Right:} Bar chart ranking the top-10 most-attended lane tokens. Lane~606 (cumulative attention 0.68) and Lane~594 (0.39) dominate, both corresponding to the northbound road segment. Alternative mode predictions (orange lines) attend to adjacent lanes.}
+    \label{fig:lane_activation}
+\end{figure}
+
+The lane activation map provides direct evidence that the model's lane attention is spatially coherent and functionally meaningful. The two highest-attended lanes (606 and 594, with cumulative attention weights of 0.68 and 0.39 respectively) align precisely with the ego vehicle's ground-truth forward trajectory. The steep drop-off to the third-ranked lane (599, attention 0.35) indicates high selectivity, with the model concentrating over 60\% of its total lane attention on just two lane segments. Alternative prediction modes (shown in orange) attend to adjacent lanes, confirming that the multi-modal nature of the predictions is reflected in the attention structure.
+
+
+\subsection{Decoder Attention Refinement}
+
+Figure~\ref{fig:time_attention} presents the temporal evolution of decoder attention across four refinement layers, illustrating how the winning mode's intention query redistributes its focus during iterative trajectory generation.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{fig_time_attention}
+    \caption{Decoder attention refinement across four layers. Each panel shows the top-10 most-attended tokens for the winning mode's intention query. \textbf{Red} bars: ego vehicle self-attention. \textbf{Blue} bars: other agent tokens. \textbf{Green} bars: lane tokens. Across layers, the model consistently attends to the same key vehicles (Veh\_16 and Veh\_25), but their relative importance shifts: ego self-attention decreases from 0.172 (Layer~1) to 0.131 (Layer~4), while the dominant neighbor vehicle (Veh\_16) increases from 0.201 to 0.253.}
+    \label{fig:time_attention}
+\end{figure}
+
+The decoder refinement reveals two notable patterns. First, the set of top-attended tokens is remarkably stable across layers: the same two vehicles (Veh\_16 and Veh\_25) and two lanes (Lane\_53 and Lane\_63) appear in the top-5 across all four decoder layers, suggesting that the model identifies the most relevant scene elements early and refines their relative weighting iteratively. Second, ego self-attention systematically decreases across layers (0.172$\to$0.116$\to$0.116$\to$0.131), while attention to the dominant neighbor (Veh\_16) increases (0.201$\to$0.208$\to$0.241$\to$0.253). This shift from self-focused to neighbor-focused attention during refinement indicates that later decoder layers increasingly condition the trajectory on the behavior of key interacting agents.
+
+
+\FloatBarrier
+\clearpage
+\subsection{Mode-Specific Attention Disentanglement}
+
+To investigate whether the model's $K=6$ prediction modes truly reflect distinct reasoning strategies or merely produce different trajectory outputs from identical attention, we compare attention patterns across modes for the same target agent. Figure~\ref{fig:mode_attention_comparison} presents the analysis.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{fig_mode_attention_comparison}
+    \caption{Mode-specific attention comparison for three maneuver intentions: Left Turn, Bear Left, and Straight. Each panel shows the spatial attention distribution (top) and agent-wise attention bar chart (bottom) for the corresponding mode's intention query. Left Turn mode distributes attention broadly across non-ego agents in the turning path (ego self-attention: 0.15), while Straight mode concentrates heavily on the ego vehicle itself (self-attention: 0.43) with forward lane focus. Jensen-Shannon Divergence between Left Turn and Straight map attention is 0.128, confirming quantitative disentanglement.}
+    \label{fig:mode_attention_comparison}
+\end{figure}
+
+The mode-specific analysis reveals that different prediction modes attend to fundamentally different scene elements, providing evidence that multi-modal prediction reflects diverse reasoning strategies rather than superficial output variation. The Left Turn mode distributes attention across non-ego agents in the potential turning path, with ego self-attention limited to 0.15---the model surveys surrounding vehicles to assess gap acceptance feasibility. In contrast, the Straight mode exhibits ego self-attention of 0.43, nearly three times higher, concentrating on the target agent's own state and forward lane geometry. This divergence demonstrates that modes prioritize distinct contextual cues aligned with their intended maneuvers.
+
+The Jensen-Shannon Divergence of 0.128 between Left Turn and Straight mode map attention distributions quantifies this disentanglement objectively. Values above 0.10 indicate substantial distributional difference, confirming that the modes do not share a common attention strategy. The Bear Left mode occupies an intermediate position, blending elements of both patterns. These findings validate the multi-modal architecture's design assumption: that trajectory diversity requires intention diversity, and intention diversity manifests in attention allocation. For interpretability, this result is critical---it confirms that analyzing individual mode attention patterns can reveal the model's strategic reasoning for each predicted outcome.
+
+
+\FloatBarrier
+\subsection{Failure Diagnosis: Tunnel Vision}\label{sec:failure_results}
+
+To investigate the relationship between attention patterns and prediction quality, we partition 1{,}115 prediction targets from the validation set into success (Q1, ADE~$\leq$0.71\,m) and failure (Q4, ADE~$\geq$3.32\,m) quartiles and compare their attention statistics. Figure~\ref{fig:failure_diagnosis} presents the results.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{fig_failure_diagnosis}
+    \caption{Attention and contextual comparison between successful (Q1) and failed (Q4) predictions. (a)~\textbf{Attention metrics}: failures exhibit lower entropy (5.72 vs.\ 5.94 bits), lower agent attention share (43.2\% vs.\ 48.8\%), higher self-attention (0.049 vs.\ 0.035), and higher maximum single-token concentration (0.058 vs.\ 0.039). Bars are normalized to the maximum observed value for visual comparison. (b)~\textbf{Contextual factors}: failures occur predominantly for fast-moving agents (mean speed 7.2\,m/s vs.\ 0.2\,m/s for successes), with fewer nearby agents within 15\,m (3.4 vs.\ 5.2).}
+    \label{fig:failure_diagnosis}
+\end{figure}
+
+We term this pattern \textbf{``tunnel vision''}: failed predictions are characterized by \emph{lower} attention entropy (5.72 vs.\ 5.94 bits), \emph{higher} self-attention (0.049 vs.\ 0.035), and \emph{higher} maximum single-token concentration (0.058 vs.\ 0.039). Counter-intuitively, the model does not fail because it is confused or spread too thin; rather, it fails when it over-focuses on a narrow set of tokens---particularly itself---at the expense of monitoring the broader scene context.
+
+The contextual analysis in Figure~\ref{fig:failure_diagnosis}b reveals that speed is the dominant risk factor: failed predictions correspond to agents moving at 7.2\,m/s on average, compared to 0.2\,m/s for successes. These fast-moving agents traverse greater distances during the 8-second prediction horizon, making accurate forecasting inherently more difficult. Notably, failed agents also have \emph{fewer} nearby neighbors (3.4 vs.\ 5.2 within 15\,m), suggesting they are more often in open-road or highway-like settings where less social context is available to constrain the prediction.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{fig_cyclist_failure}
+    \caption{Cyclist failure case study comparing vulnerable road user prediction with vehicle prediction. (a)~Cyclist target with ADE~=~9.3\,m (prediction MISS): self-attention is only 0.026, and the two cyclists in the scene collectively receive 0.050 total attention. (b)~Vehicle target with ADE~=~0.4\,m (prediction HIT): self-attention is 0.045 (73\% higher than cyclist case), and the 22 vehicles collectively receive 0.345 attention. In the scanned validation subset, cyclist miss rate is 100\% while vehicle miss rate is 82.2\%, directly visualizing the tunnel vision failure mode for underrepresented agent types.}
+    \label{fig:cyclist_failure}
+\end{figure}
+
+Figure~\ref{fig:cyclist_failure} provides direct visual evidence of the tunnel vision failure mode applied to vulnerable road users. Panel~(a) shows a cyclist prediction failure with ADE~=~9.3\,m, where the target cyclist receives self-attention of only 0.026---less than 3\% of the total attention budget. The two cyclists present in the scene collectively attract 0.050 attention, while the 22 vehicles dominate with 0.345 cumulative attention, a sevenfold disparity. Panel~(b) contrasts this with a successful vehicle prediction (ADE~=~0.4\,m), where the target vehicle's self-attention is 0.045, representing a 73\% increase over the cyclist case. In the scanned validation subset, the cyclist miss rate reaches 100\% compared to 82.2\% for vehicles, consistent with the 88.1\% cyclist miss rate reported in Table~\ref{tab:per_agent_type}. This visualization suggests that the model systematically under-attends to underrepresented agent classes, translating data imbalance into attention bias and ultimately prediction failure for safety-critical vulnerable road users.
+
+
+\FloatBarrier
+\clearpage
+\subsection{Scene-Type Attention Adaptation}
+
+To evaluate whether the model dynamically adapts its attention strategy to different driving contexts, we classify validation scenes into six non-exclusive categories and compare their attention statistics. Figure~\ref{fig:scene_type} presents the results.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{fig_scene_type_comparison}
+    \caption{Attention adaptation across scene types. (a)~Agent vs.\ map attention share: dense-traffic and intersection scenes allocate the most agent attention (42.3\%), while sparse scenes allocate the least (18.4\%), reflecting the reduced need to monitor other agents. (b)~Entropy and mean top-5 attended distance: highway-like scenes show the highest mean attended distance (21.4\,m), consistent with the need to track vehicles at greater range; intersection scenes attend to closer elements (17.0\,m). Sample sizes ($N$) shown above each bar.}
+    \label{fig:scene_type}
+\end{figure}
+
+The scene-type analysis reveals coherent adaptation along two dimensions. Along the \emph{density axis}, the model increases its agent attention share as the number of traffic participants grows: 42.3\% for dense-traffic scenes versus 18.4\% for sparse scenes, with a corresponding shift toward map attention (81.6\%) in sparse environments where the road geometry becomes the primary constraint. Along the \emph{spatial range axis}, highway-like scenes elicit the highest mean top-5 attended distance (21.4\,m), consistent with the need to monitor fast-moving vehicles at greater range, while intersection scenes attend to closer elements (17.0\,m) where conflicts occur at shorter distances. Entropy is highest in dense-traffic scenes (6.11 bits) and lowest in sparse scenes (5.33 bits), confirming that the model distributes attention more broadly when more agents compete for processing resources.
+
+
+\FloatBarrier
+\subsection{Distance Mask Ablation}
+
+To test whether far-range attention captures meaningful contextual signals, we apply distance-decay masking at inference time with varying strength $\alpha \in \{0.00, 0.05, 0.10, 0.20\}$, where the mask exponentially down-weights attention to tokens beyond a characteristic distance. Figure~\ref{fig:distance_ablation} presents the results.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.7\textwidth]{fig_distance_ablation}
+    \caption{Distance mask ablation results. Even mild masking ($\alpha = 0.05$) increases minADE@6 by 4.7\% (from 2.872\,m to 3.007\,m). Stronger masking ($\alpha = 0.10$, $\alpha = 0.20$) produces similar degradation (+5.6\% and +5.4\% respectively). The consistent performance loss across all masking levels demonstrates that far-range attention encodes non-trivial contextual information.}
+    \label{fig:distance_ablation}
+\end{figure}
+
+The ablation demonstrates that far-range attention carries non-trivial contextual signals. Even mild distance masking ($\alpha = 0.05$) degrades performance by 4.7\% (2.872\,m$\to$3.007\,m), and stronger masking ($\alpha = 0.10$, $\alpha = 0.20$) produces similar degradation (+5.6\% and +5.4\%). The near-plateau at stronger masking suggests that most of the useful far-range information is captured at moderate distances, but even these moderate-distance signals are important. This finding has practical implications: naive attention pruning strategies that discard far-range tokens to reduce computational cost will sacrifice prediction accuracy, arguing for interpretability-guided sparsification rather than distance-based heuristics.
+
+
+\FloatBarrier
+\subsection{Counterfactual Case Study}
+
+To demonstrate the causal relationship between specific scene elements and the model's attention distribution, we conduct a controlled counterfactual experiment: removing the most-attended agent from an intersection scenario and observing how attention redistributes across the remaining tokens. Figure~\ref{fig:counterfactual_case_study} presents the results.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{fig_counterfactual_case_study}
+    \caption{Counterfactual case study demonstrating attention redistribution after removing the most-attended vehicle. \textbf{Left:} Original scene with 17 agents. The lead vehicle (Vehicle\_16, 32\,m ahead) receives the highest attention weight (0.048). \textbf{Right:} Modified scene with Vehicle\_16 removed. The freed attention redistributes non-uniformly: agent entropy decreases by 0.08 bits (from 5.92 to 5.84), and map attention share increases by 0.016 (from 0.636 to 0.652). The second-highest-attended vehicle (Vehicle\_25) gains 0.012 additional attention weight, and Lane\_53 (the target lane) gains 0.008. This demonstrates non-trivial attention redistribution rather than uniform spread across all remaining tokens.}
+    \label{fig:counterfactual_case_study}
+\end{figure}
+
+The counterfactual experiment reveals three key findings about the model's attention dynamics. First, attention redistribution is \emph{non-uniform}: when Vehicle\_16 (initially receiving attention weight 0.048) is removed, its 4.8\% attention share does not distribute evenly across the remaining 95 tokens. Instead, the model reallocates attention preferentially to structurally similar elements---primarily the next-closest vehicle in the forward path (Vehicle\_25) and the target lane (Lane\_53). This selective redistribution indicates that the model maintains a latent priority ordering of scene elements rather than treating all tokens as equally substitutable.
+
+Second, the attention entropy \emph{decreases} rather than increases after removing the most-attended agent. Counter-intuitively, eliminating a high-attention element causes the model to focus \emph{more narrowly} on the remaining tokens, with entropy dropping from 5.92 to 5.84 bits. This suggests that the presence of the lead vehicle led the model to maintain broader situational awareness; its absence allows the model to concentrate more heavily on map structure, as evidenced by the 1.6\% increase in map attention share.
+
+Third, the small magnitude of the entropy change (0.08 bits, representing approximately 1.4\% of the maximum possible entropy for 96 tokens) indicates that the model's overall reasoning structure is relatively robust to the removal of individual agents, even highly attended ones. This finding has implications for safety certification: while attention does redistribute in response to scene changes, the model does not exhibit catastrophic attention collapse when key elements are perturbed, suggesting reasonable generalization to novel configurations.
+
+\FloatBarrier

@@ -1,0 +1,202 @@
+% =============================================================================
+% Section 5: Discussion
+% Target: ~1500 words
+% =============================================================================
+
+\subsection{Spatial Attention as a Diagnostic Tool}
+
+The spatial attention visualizations reveal that the MTR-Lite model develops interpretable attention patterns that align with human driving intuition in many scenarios, yet expose systematic deficiencies in others. In intersection scenarios, the model correctly allocates high attention to oncoming vehicles and target lanes, demonstrating an implicit understanding of traffic conflicts. In highway scenarios, attention concentrates on the lead vehicle and current lane boundaries, reflecting the simpler decision structure. These qualitatively sensible patterns suggest that attention weights in trajectory prediction Transformers do carry meaningful semantic content, contributing to the ongoing debate about attention as explanation~\cite{jain2019attention, wiegreffe2019attention}.
+
+However, the most significant finding is not where the model \emph{does} attend, but where it \emph{does not}. Our failure analysis (Section~\ref{sec:failure_diagnosis}) reveals that failed predictions are characterized by \emph{attention tunnel vision}---lower entropy and elevated self-attention---rather than by diffuse, unfocused reasoning. Furthermore, cyclist targets appear exclusively in the failure group (4\% of failures vs.\ 0\% of successes), suggesting that underrepresented agent types in the training distribution are systematically harder to predict. This finding is further corroborated by the per-agent-type evaluation (Table~\ref{tab:per_agent_type}), which shows that cyclists exhibit an 88.1\% miss rate compared to 54.0\% for vehicles---a 63\% relative increase reflecting their unique combination of vehicle-like speeds and pedestrian-like maneuverability. These patterns likely stem from the data distribution: in the Waymo Open Motion Dataset, vehicles outnumber pedestrians and cyclists by approximately 8:1 in typical urban scenes, and the loss function weights all agents equally regardless of vulnerability. The model optimizes for aggregate accuracy, which is dominated by vehicle prediction, at the expense of the rarer but safety-critical vulnerable road user interactions.
+
+
+\subsection{Spatial Distribution of Attention and Distance Relevance}
+
+Beyond qualitative inspection, we conducted a quantitative analysis of how the model distributes attention as a function of physical distance from the ego agent. Examining the scene encoder's final-layer attention (specifically, the ego agent's attention row across all agent tokens), we compute a Pearson correlation of $r = -0.681$ between pairwise distance and attention weight. This moderate negative correlation confirms that the model has learned, at least partially, that nearby agents are more relevant for trajectory prediction. Notably, the five most-attended agents in a representative intersection scenario all lie within 13~m of the ego vehicle, demonstrating that the learned attention landscape does capture proximity-based relevance.
+
+However, a finer-grained analysis by distance band reveals that this spatial prioritization is far from optimal:
+
+\begin{itemize}[leftmargin=*,labelsep=4.9mm]
+    \item \textbf{Near range ($<$10~m)}: 5 agents receive 34.7\% of total agent attention.
+    \item \textbf{Mid range (10--30~m)}: 6 agents receive 36.8\% of total agent attention.
+    \item \textbf{Far range (30--50~m)}: 8 agents receive 28.6\% of total agent attention.
+\end{itemize}
+
+The eight far-range agents collectively consume nearly 29\% of the attention budget, despite being least likely to interact with the ego vehicle within a typical prediction horizon. Among these, several stationary vehicles at distances exceeding 40~m (speed $= 0$~m/s) each receive approximately 2\% of the attention---a pattern that initially appeared to represent wasted representational capacity, as parked vehicles at such distances might seem to have negligible influence on ego trajectory. However, one vehicle at 36.7~m traveling at 10.8~m/s receives 6.6\% of attention; given the 8-second prediction horizon, this agent will traverse approximately 86~m and could plausibly enter the ego vehicle's vicinity, making the elevated attention contextually appropriate.
+
+This initial observation that 28.6\% of attention is directed to agents beyond 30~m raised a natural hypothesis: perhaps this far-range attention represents computational waste that could be pruned to improve efficiency. The architectural design supports this interpretation---the global self-attention mechanism in our Scene Encoder treats all 96 tokens (32 agents and 64 map polylines) identically, with no spatial inductive bias. Every token attends to every other token regardless of physical separation, and the model must learn distance-dependent relevance entirely from position features embedded in the input. While the moderate correlation ($r = -0.681$) shows partial success, the absence of an explicit spatial prior means that a substantial fraction of attention is allocated to agents whose individual contribution appears small.
+
+From a sustainability and efficiency perspective, if far-range attention were indeed unnecessary, pruning it would reduce computation without sacrificing accuracy. Each attention head computes pairwise scores across all tokens, and the quadratic cost of global self-attention scales with the total token count. If spatially distant tokens could be excluded or down-weighted \emph{a priori}, the model could potentially achieve equivalent or better prediction accuracy with fewer floating-point operations. Several architectural modifications could, in principle, implement such pruning:
+
+\begin{itemize}[leftmargin=*,labelsep=4.9mm]
+    \item \textbf{Distance-decay attention bias}: Adding a learned or fixed distance-dependent bias term to the attention logits before softmax, analogous to relative position encodings in language models~\cite{vaswani2017attention}, would encourage the model to discount far agents by default while retaining the flexibility to override this bias when warranted.
+    \item \textbf{Sparse local attention windows}: Restricting each agent's attention to tokens within a spatial radius (e.g., 30~m) would eliminate the quadratic cost of attending to distant, irrelevant tokens, while a small set of global tokens could preserve long-range connectivity for high-speed approaching vehicles.
+    \item \textbf{Attention regularization}: An auxiliary loss term penalizing attention to far-away agents with low relative velocity would provide explicit supervision for spatial efficiency without modifying the architecture itself.
+\end{itemize}
+
+These improvements target both prediction quality and computational efficiency, aligning with the Green AI principle that models should be not only accurate but also resource-conscious~\cite{taiebat2018av_sustainability}. The spatial attention analysis presented here provides a concrete, quantitative basis for guiding such architectural decisions, demonstrating the diagnostic value of interpretable attention visualization beyond qualitative inspection.
+
+To rigorously test the hypothesis that far-range attention could be pruned without performance loss, we conducted an ablation experiment applying inference-time distance-decay masking to the scene encoder's attention mechanism. Concretely, we added a distance-dependent bias to the attention logits before softmax: $\text{bias}[i][j] = -\alpha \cdot d(t_i, t_j)$, where $d(t_i, t_j)$ denotes the Euclidean distance between tokens $i$ and $j$ and $\alpha$ controls the suppression strength. This formulation preserves the model's learned weights while progressively discounting attention to physically distant agents. Crucially, no retraining was performed; the mask was applied at inference time only, isolating the effect of spatial attention redistribution from any confounding weight adaptation. We evaluated on 100 validation scenes encompassing 750 target agents across diverse urban contexts:
+
+\begin{itemize}[leftmargin=*,labelsep=4.9mm]
+    \item $\alpha = 0.00$ (baseline, no masking): minADE@6 $= 2.872$~m.
+    \item $\alpha = 0.05$ (mild suppression): minADE@6 $= 3.007$~m (+4.7\%).
+    \item $\alpha = 0.10$ (moderate suppression): minADE@6 $= 3.032$~m (+5.6\%).
+    \item $\alpha = 0.20$ (strong suppression): minADE@6 $= 3.026$~m (+5.4\%).
+\end{itemize}
+
+\noindent \textbf{The ablation experiment decisively refutes the pruning hypothesis.} Contrary to our initial expectation that suppressing far-range attention would improve or preserve performance, all levels of distance masking degraded prediction accuracy. Even mild suppression ($\alpha = 0.05$) increased minADE@6 by nearly 5\%, demonstrating that what appeared to be excessive far-range attention in fact encodes essential scene context. The degradation plateaued rather than worsened at stronger masking levels, suggesting that the model's learned far-range attention captures non-trivial contextual information whose absence triggers a performance ceiling.
+
+We identify three mechanisms through which distant agents convey prediction-relevant signals despite their low individual attention weights: (1)~\emph{traffic flow context}---stationary vehicles far ahead may indicate congestion or a red traffic signal, cueing the ego agent to decelerate; (2)~\emph{road structure inference}---the spatial distribution of distant vehicles implicitly encodes lane geometry and road topology, supplementing the explicit map polyline tokens; and (3)~\emph{indirect interaction dynamics}---the behavior of far agents propagates through the traffic stream, influencing nearby agents' decisions and, by extension, the ego agent's future trajectory. Collectively, these mechanisms demonstrate that far-range attention is \emph{functionally justified}: while individual distant tokens receive small attention shares (approximately 2\% each), their aggregate contribution encodes scene-level context that the model exploits for accurate prediction. The 28.6\% attention budget allocated to far-range agents is not waste, but rather distributed investment in contextual signals whose individual contributions appear small yet prove collectively indispensable.
+
+This ablation illustrates a broader methodological point about the interpretability framework itself. The spatial attention analysis initially generated a concrete, testable hypothesis---that far-range attention represented computational waste that could be pruned. The distance mask experiment falsified this hypothesis, revealing that global attention in Transformer-based trajectory prediction serves a richer contextual function than proximity-based relevance alone. This \emph{observe--hypothesize--test} cycle demonstrates that attention visualization is most powerful not as a standalone explanation, but as a hypothesis-generation tool that motivates rigorous empirical validation and can overturn initial intuitions. The narrative arc here---initial observation suggesting waste, followed by experimental evidence proving necessity---underscores the value of combining qualitative attention analysis with quantitative ablation studies.
+
+From a sustainability and Green AI perspective, the finding cautions against naive spatial pruning strategies: any efficiency-oriented architectural modification must preserve the model's access to long-range contextual signals, favoring approaches such as hierarchical attention, learnable sparsity patterns, or adaptive computation over hard distance cutoffs. The fact that 28.6\% of attention is allocated to distant agents does not imply inefficiency; rather, it reflects the model's learned strategy for encoding scene-level context through distributed attention over many low-salience tokens. Future efficiency improvements should respect this contextual encoding rather than discarding it.
+
+
+\subsection{Counterfactual Insights and Causal Reasoning}
+
+The counterfactual experiments enabled by scene editing are designed to provide a fundamentally different quality of evidence compared to observational analysis alone. By removing a specific agent and observing the attention redistribution, one can in principle make causal claims---for example, that the presence of an oncoming vehicle \emph{causes} the model to allocate a large share of its attention budget to conflict assessment, which in turn \emph{causes} it to predict a waiting trajectory. Such claims are not possible from correlational analysis of static datasets.
+
+Three testable hypotheses motivate the counterfactual methodology:
+
+\begin{enumerate}[leftmargin=*,labelsep=4.9mm]
+    \item \textbf{Attention is reactive}: We hypothesize that the model's attention distribution adapts when scene elements change, reflecting genuine reasoning about current scene context rather than memorized patterns.
+    \item \textbf{Attention redistribution is non-trivial}: We hypothesize that when an agent is removed, the freed attention does not distribute uniformly across remaining tokens but instead flows preferentially to the next most relevant element (typically the target lane or next-closest agent), revealing a learned priority hierarchy.
+    \item \textbf{Failure modes are identifiable}: We hypothesize that in some fraction of counterfactual experiments, the model's attention may not adapt appropriately to scene changes, revealing robustness failures that merit further investigation.
+\end{enumerate}
+
+\noindent Executing these counterfactual experiments systematically at scale---across diverse scene types, agent configurations, and editing operations---is planned as future work. The framework described in Section~\ref{sec:counterfactual} provides the methodological infrastructure; the hypotheses above define the experimental agenda.
+
+
+\subsection{Layer-Wise Specialization and Computational Implications}
+
+The layer-wise entropy analysis presented in Section~\ref{sec:entropy_results} and Figure~\ref{fig:entropy_evolution} reveals a \emph{non-monotonic} pattern that challenges the naive expectation of simple progressive focusing. A preliminary single-scene inspection had suggested monotonically decreasing entropy, which, if true, would have clear computational implications: tokens receiving near-zero attention in late layers could be pruned. However, the larger-scale analysis paints a more nuanced picture.
+
+The non-monotonic pattern---decreasing entropy in Layers~0--2 (5.64$\to$5.36 bits) followed by a sharp reversal in Layer~3 (5.92 bits)---reveals a hierarchical encoding strategy rather than simple convergence. Layers~0--2 progressively filter agent tokens to identify the most relevant traffic participants, while Layer~3 pivots to gather spatial context from lane polylines and road boundaries before passing the enriched representation to the decoder. We term this \emph{collaborative layer specialization}: agent-identification layers feed into a context-aggregation layer. This finding reinforces the diagnostic value of our visualization framework: without token-type decomposition at each layer, the reversal would be invisible, and the encoder's strategy would appear monotonic when it is in fact functionally heterogeneous.
+
+The head-wise analysis further reveals that this layer-level specialization conceals substantial within-layer heterogeneity. While Layer~3 exhibits 63.6\% map attention in aggregate, individual heads adopt distinct roles: Head~5 allocates 93.3\% attention to map tokens, while Head~3 maintains 58.8\% agent attention, acting as an ``agent sentinel'' that preserves social context even as peer heads pivot to spatial planning. This 52.1 percentage-point spread demonstrates functional head specialization, suggesting that architectural efficiency strategies must account for both layer-level and head-level divisions of labor.
+
+The computational implication is subtle. While early-exit strategies based on monotonic focusing are not straightforward, the clear functional separation between agent-focused (Layers~0--2) and map-focused (Layer~3) processing could inform architecture-aware efficiency strategies, such as applying different sparsification policies per layer or using adaptive computation that allocates more resources to the final map-aggregation step.
+
+
+\subsection{Scene-Type Attention Adaptation}
+
+Section~\ref{sec:results} and Figure~\ref{fig:scene_type} demonstrate that the model dynamically adapts its attention strategy across scene types. Table~\ref{tab:scene_type_attention} provides the detailed per-category statistics.
+
+\begin{table}[H]
+\caption{Attention distribution across scene types (200 scenes). Agent\% and Map\% denote the fraction of total attention directed to agent and map tokens, respectively. Top-5~Dist.\ is the mean distance of the five most-attended agents from the ego vehicle.\label{tab:scene_type_attention}}
+\centering
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Scene Type} & \textbf{N} & \textbf{Agent\%} & \textbf{Map\%} & \textbf{Entropy (bits)} & \textbf{Top-5 Dist.\ (m)} \\
+\midrule
+Dense traffic     & 90  & 42.3 & 57.7 & 6.11 & 18.1 \\
+Sparse            & 14  & 18.4 & 81.6 & 5.33 & 18.3 \\
+Highway-like      & 52  & 31.6 & 68.4 & 5.71 & 21.4 \\
+Intersection-like & 75  & 42.3 & 57.7 & 6.10 & 17.0 \\
+With pedestrians  & 105 & 39.4 & 60.6 & 5.99 & 17.4 \\
+With cyclists     & 37  & 39.2 & 60.8 & 5.90 & 17.2 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Several patterns emerge from this comparison. First, attention entropy correlates strongly with scene complexity: dense traffic and intersection scenarios produce the highest entropy (6.11 and 6.10~bits), while sparse scenes yield the lowest (5.33~bits). This confirms that the model distributes attention more broadly when more traffic participants compete for relevance. The contrast in agent-directed attention between dense (42.3\%) and sparse (18.4\%) scenes is particularly striking---when fewer agents are present, the model compensates by attending more heavily to map structure, presumably to infer road context that agents would otherwise provide implicitly.
+
+Second, the top-5 attended-agent distance reveals an adaptive planning horizon: highway-like scenes exhibit the largest mean distance (21.4~m), compared with 17.0~m for intersections. At highway speeds, agents farther ahead become relevant within the prediction window, and the model adjusts its spatial focus accordingly. Third, cyclist-containing scenes show the highest near-to-far attention ratio among all categories (1.70$\times$), indicating that the model concentrates attention on nearby vulnerable road users rather than distributing it across distant context. This finding has direct implications for traffic safety policy: an interpretable model whose attention demonstrably prioritizes nearby cyclists provides a stronger basis for regulatory trust than one whose internal reasoning is opaque. More broadly, these scene-type adaptations demonstrate that the visualization framework reveals not only static architectural properties but also dynamic, context-sensitive behavior---evidence that attention-based interpretability can inform both model improvement and safety-critical deployment decisions.
+
+
+\subsection{Failure Diagnosis Through Attention: Identifying Safety-Critical Patterns}
+\label{sec:failure_diagnosis}
+
+The analyses presented thus far characterize attention behavior in aggregate or across scene categories, but a safety-critical question remains: \emph{does the model's attention differ systematically between successful and failed predictions?} Section~\ref{sec:failure_results} and Figure~\ref{fig:failure_diagnosis} present the quantitative evidence for a ``tunnel vision'' failure mode. Here we interpret these findings and discuss their implications. We stratified 1{,}115 prediction targets into success (Q1, minADE~$\leq 0.71$~m, $n = 279$) and failure (Q4, minADE~$\geq 3.32$~m, $n = 279$) groups. Table~\ref{tab:success_failure} provides the detailed attention and contextual statistics.
+
+\begin{table}[H]
+\caption{Attention and contextual comparison between successful and failed predictions (quartile split, $n = 279$ per group). Metrics are computed from the scene encoder's final-layer attention. Agent attention~\% denotes the fraction of total attention directed to agent tokens. GT-nearest agent distance is the Euclidean distance from the ground-truth future trajectory to the closest neighboring agent.\label{tab:success_failure}}
+\centering
+\small
+\begin{tabular}{lcc}
+\toprule
+\textbf{Metric} & \textbf{Success (Q1)} & \textbf{Failure (Q4)} \\
+\midrule
+minADE (m) & 0.57 & 7.19 \\
+Attention entropy (bits) & 5.94 & 5.72 \\
+Agent attention (\%) & 48.8 & 43.2 \\
+Self-attention weight & 0.035 & 0.049 \\
+Max single-token attention & 0.039 & 0.058 \\
+GT-nearest agent distance (m) & 5.5 & 33.9 \\
+Target speed (m/s) & 0.2 & 7.2 \\
+Nearby agents ($<$15~m) & 5.2 & 3.4 \\
+Cyclist targets in group (\%) & 0 & 4 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Three findings emerge from this analysis, each with direct implications for autonomous driving safety.
+
+\textbf{Finding 1: The ``tunnel vision'' failure mode.}
+Counter to the intuitive expectation that failures arise from diffuse, unfocused attention, the failure group exhibits \emph{lower} entropy (5.72 vs.\ 5.94~bits) and \emph{higher} self-attention (0.049 vs.\ 0.035). In failed predictions, the model concentrates disproportionate attention on its own token representation rather than surveying the surrounding scene. The maximum single-token weight is 49\% higher in failures (0.058 vs.\ 0.039), confirming that the model over-commits to a narrow subset of tokens. We term this pattern \emph{attention tunnel vision}: the model fails not because its attention is too diffuse, but because it retreats into self-referential processing and under-attends to contextual cues that would correct its trajectory estimate. This finding inverts the common assumption that broader attention is wasteful, and it implies that attention entropy could serve as a real-time diagnostic: abnormally low entropy during inference may signal an impending prediction failure.
+
+\textbf{Finding 2: Speed as the dominant risk factor.}
+The most striking contextual difference between the two groups is target speed. Success cases average 0.2~m/s---nearly stationary agents whose future positions are trivially predictable---while failure cases average 7.2~m/s. At this speed, an agent traverses approximately 57.6~m over the 8-second prediction horizon, introducing a vast spatial envelope of plausible future positions. The model's attention pathology at 7.2~m/s raises concerns about behavior at highway speeds (25--35~m/s), where the spatial uncertainty grows by an additional factor of four to five. These high-speed regimes are precisely where prediction failures carry the greatest collision risk, since stopping distances grow quadratically with speed. Although our dataset predominantly contains urban driving, the trend strongly suggests that attention-based prediction models require explicit architectural or training interventions to maintain healthy attention patterns at elevated speeds.
+
+\textbf{Finding 3: Missing reference anchors.}
+In successful predictions, the nearest neighboring agent to the ground-truth future trajectory is only 5.5~m away, providing the model with a proximal ``reference anchor''---a nearby traffic participant whose current position and heading implicitly constrain the target's plausible future paths. In failure cases, this distance balloons to 33.9~m: the model must predict the target's trajectory in a spatial region devoid of other agents, eliminating the anchor-based heuristic. Concurrently, the mean number of nearby agents (within 15~m) drops from 5.2 to 3.4, further impoverishing the local context. This pattern suggests that the model partially relies on a ``follow the leader'' strategy---using neighboring agents' trajectories as soft constraints on the prediction---and degrades when this social cue is unavailable. The 4\% prevalence of cyclists exclusively in the failure group further indicates that underrepresented agent types in the training distribution compound the difficulty of isolated, high-speed prediction. Figure~\ref{fig:cyclist_failure} provides direct visual evidence: a cyclist target receives only 0.026 self-attention (versus 0.045 for a successful vehicle prediction, a 73\% deficit), and cyclists collectively attract sevenfold less attention than vehicles despite their elevated vulnerability. The 100\% cyclist miss rate in the case study subset directly visualizes this attention bias translating into prediction failure for vulnerable road users.
+
+\textbf{Implications for safety certification and sustainable deployment.}
+These findings transform our interpretability framework from a visualization tool into a \emph{failure diagnosis instrument}. The tunnel vision pattern is directly relevant to production autonomous driving systems---including those deployed by major manufacturers---that rely on Transformer attention for scene understanding and prediction. If attention entropy drops below a calibrated threshold during inference, the system could flag the prediction as unreliable and trigger a fallback strategy (e.g., conservative braking, increased following distance, or handoff to a safety driver). Such an attention-based runtime monitor would complement traditional uncertainty estimation methods (e.g., ensemble disagreement or Monte Carlo dropout) with a mechanistically interpretable signal grounded in the model's actual reasoning process.
+
+From a regulatory perspective, these results provide the type of failure-mode evidence that frameworks such as the EU AI Act~\cite{eu2024ai_act} and NHTSA's AV testing protocols~\cite{nhtsa2022framework} increasingly demand. Rather than reporting only aggregate accuracy metrics, manufacturers could demonstrate that their models exhibit healthy attention distributions across speed regimes, agent densities, and road-user types---or disclose the conditions under which attention pathology emerges. We propose that \emph{attention health profiles}, stratified by operating conditions, should become a standard component of safety certification for Transformer-based autonomous driving systems. Such profiles would quantify the speed threshold at which tunnel vision onset occurs, the minimum agent density required for reliable anchor-based prediction, and the attention deficit for underrepresented agent classes. As future work, we envision calibrating entropy thresholds on held-out data and validating the runtime monitor in closed-loop simulation, bridging the gap between post-hoc interpretability and real-time safety assurance for sustainable autonomous mobility~\cite{taiebat2018av_sustainability, fagnant2015av_benefits}.
+
+
+\subsection{Implications for Safety Certification}
+
+Building on the failure-mode analysis and attention health profiles proposed above, our framework contributes three complementary types of evidence for regulatory compliance---each addressing a dimension that aggregate accuracy metrics alone cannot capture:
+
+\begin{enumerate}[leftmargin=*,labelsep=4.9mm]
+    \item \textbf{Spatial evidence}: BEV attention overlays demonstrate that the model ``looks at'' the correct scene elements before making predictions---or reveal when it does not, providing visual audit trails for safety reviewers.
+    \item \textbf{Causal evidence}: The counterfactual methodology described in Section~\ref{sec:counterfactual} enables controlled experiments that can demonstrate context-aware reasoning rather than pattern memorization---a capability designed to complement observational analysis.
+    \item \textbf{Quantitative thresholds}: Attention-based safety metrics (e.g., entropy bounds for tunnel vision detection, agent attention share minima for different scene types) provide testable criteria that can be incorporated into certification test suites.
+\end{enumerate}
+
+\noindent Together, these forms of evidence address the \emph{how} and \emph{why} of model behavior, complementing traditional metric-based evaluation (minADE, minFDE) that captures only the \emph{how well}.
+
+
+\subsection{Implications for Sustainable Urban Mobility}
+
+The connection between model interpretability and sustainable transportation operates through a causal chain: interpretability enables trust, trust enables adoption, and adoption enables the environmental and safety benefits that autonomous vehicles promise~\cite{fagnant2015av_benefits, milakis2017av_ripple}. Our work contributes to this chain at two levels:
+
+\begin{itemize}[leftmargin=*,labelsep=4.9mm]
+    \item \textbf{Direct sustainability}: Our distance mask ablation (Figure~\ref{fig:distance_ablation}) reveals that naive spatial pruning strategies degrade performance by 4.7\%, but the layer specialization patterns suggest that more sophisticated, architecture-aware efficiency strategies---such as early-exit mechanisms or adaptive computation---may be feasible without sacrificing safety-critical context. One promising direction is \emph{entropy-guided dynamic token pruning}: monitoring per-layer attention entropy at runtime and selectively pruning tokens whose attention weight falls below an entropy-derived threshold, thereby reducing computational cost while preserving contextually relevant information. This approach would leverage the diagnostic power of attention visualization to enable real-time efficiency optimization aligned with sustainability goals.
+    \item \textbf{Indirect sustainability}: By making trajectory prediction models transparent and auditable, we lower barriers to regulatory approval and public acceptance, accelerating the transition to shared autonomous mobility. Studies project that widespread AV adoption could reduce vehicle ownership by 30--40\%, traffic fatalities by 90\%, and fuel consumption by 40\%~\cite{fagnant2015av_benefits, greenblatt2015av_emissions}.
+\end{itemize}
+
+
+\subsection{Limitations and Generalizability}
+
+We acknowledge several limitations that bound the scope of our quantitative findings and discuss which aspects of this work generalize beyond the specific model studied.
+
+\textbf{Model scale gap and the probe model paradigm.}
+Our MTR-Lite variant comprises approximately 8~million parameters trained on approximately 17{,}800 scenes, achieving a minADE of 2.314~m on the full validation set (13{,}388 scenes, 99{,}370 agent predictions). Production trajectory prediction systems typically exceed 100~million parameters, train on millions of scenes, and achieve minADE values below 0.8~m. This order-of-magnitude gap in model capacity and data scale means that the specific quantitative findings reported here---such as absolute entropy values (5.3--6.1~bits), the 29\% far-range attention share, or the 49\% elevation in maximum single-token weight between success and failure cases---may not transfer directly to larger models. Richer representations learned at scale could mitigate or alter these patterns.
+
+However, MTR-Lite's value lies not in competing with state-of-the-art prediction accuracy, but in serving as an \emph{interpretability probe}---a deliberately lightweight model that enables systematic attention analysis with rapid iteration cycles and manageable computational overhead. The visualization framework itself is model-agnostic: applying the same attention extraction and spatial bookkeeping methodology to production-scale models such as MTR++~\cite{shi2024mtrpp} or Wayformer~\cite{nayakanti2023wayformer} is straightforward, as all Transformer-based predictors expose attention weights through the same API. Extending this work to larger models is planned as future work and would reveal whether the tunnel vision failure mode, layer specialization patterns, and scene-type adaptations we document here persist at scale or are replaced by qualitatively different attention strategies enabled by richer capacity.
+
+Moreover, recent evidence from natural language processing suggests that structural attention pathologies persist even at large scale: Xiao et al.~\cite{xiao2023attention_sinks} demonstrate that large language models exhibit ``attention sinks,'' allocating disproportionate attention to initial tokens regardless of semantic relevance, while Zhai et al.~\cite{zhai2023attention_collapse} document attention entropy collapse in deep Vision Transformers. These findings suggest that the tunnel vision failure mode identified in Section~\ref{sec:failure_diagnosis} may reflect fundamental architectural properties rather than scale-specific limitations.
+
+\textbf{Data scale and vulnerable road user prediction.}
+Training on 20\% of the Waymo Open Motion Dataset (approximately 17{,}800 scenes rather than the full 85{,}000+ training scenes) has particularly pronounced implications for rare agent types such as cyclists. Cyclists already constitute a small minority in the full dataset---outnumbered by vehicles approximately 8:1 in typical urban scenes---so training on 20\% of the data reduces the effective cyclist training examples by roughly fivefold. The 88.1\% miss rate for cyclist predictions reported in Table~\ref{tab:per_agent_type}---compared to 54.0\% for vehicles, a 63\% relative increase---likely reflects both the inherent challenge of predicting cyclist behavior (which combines vehicle-like speeds with pedestrian-like maneuverability) \emph{and} severe data scarcity. Training on the full dataset would likely improve cyclist prediction accuracy by providing the model with sufficient examples to learn cyclist-specific motion patterns. However, the tunnel vision attention pattern documented in Section~\ref{sec:failure_diagnosis}---lower entropy and elevated self-attention in failed predictions---may persist even with more data, as it appears to be an architecture-level failure mode rather than a data-level deficiency. Future work should investigate whether data augmentation strategies specific to vulnerable road users, or loss weighting schemes that prioritize rare agent types, can mitigate this safety-critical gap.
+
+\textbf{Architecture differences.}
+MTR-Lite employs vanilla global self-attention without spatial inductive bias. State-of-the-art production models incorporate local attention windows, relative position encoding, factored attention (as in Wayformer~\cite{nayakanti2023wayformer}), or scene-graph structures that explicitly encode spatial relationships. These architectural choices may mitigate issues such as the ``tunnel vision'' pattern we identified, since mechanisms like distance-gated attention inherently limit self-referential processing. Our counterfactual experiments are likewise constrained to element removal and modification within real scenes, rather than generating fully synthetic scenarios, and the causal claims they support apply to the specific model under test rather than constituting formal guarantees in the Pearl~\cite{pearl2009causality} sense.
+
+\textbf{What generalizes.}
+Despite these model-specific caveats, several contributions of this work are designed to generalize broadly:
+
+\begin{itemize}[leftmargin=*,labelsep=4.9mm]
+    \item \emph{Methodology.} The visualization framework---spatial token bookkeeping, Gaussian splatting, polyline painting, and layer-wise entropy decomposition---applies to any Transformer-based driving model that produces attention weights over spatially grounded tokens. The tools are architecture-agnostic.
+    \item \emph{Architecture-level findings.} The observation that global self-attention lacks an inherent distance prior is a structural property of the attention mechanism itself, not an artifact of model scale. Any architecture using unmodified dot-product attention over spatially embedded tokens will face the same challenge of learning distance relevance from data alone.
+    \item \emph{Physics-driven findings.} The correlation between target speed and prediction difficulty, and the role of nearby agents as reference anchors, are driven by traffic dynamics rather than model specifics. These relationships should manifest in any prediction model operating on real-world driving data.
+    \item \emph{Diagnostic pattern.} The \emph{observe--hypothesize--test} cycle we demonstrated---where spatial attention analysis generated a hypothesis about far-range attention waste, and the distance-mask ablation falsified it---is a reusable diagnostic methodology applicable to production-scale systems.
+\end{itemize}
+
+\noindent Our primary contribution is therefore not the specific attention statistics, but the interpretability framework and diagnostic methodology. We demonstrated on MTR-Lite how this framework reveals tunnel vision, speed-dependent risk, layer specialization, and reference anchor effects. Applying the same tools to production-scale models with richer architectures is a natural and important direction for future work, and we anticipate that such analyses will uncover both analogous patterns and novel phenomena enabled by greater model capacity.

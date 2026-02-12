@@ -1,0 +1,71 @@
+% =============================================================================
+% Section 2: Related Work
+% Target: ~1500 words, 3 subsections
+% =============================================================================
+
+\subsection{Transformer-Based Trajectory Prediction}
+
+The application of Transformer architectures~\cite{vaswani2017attention} to motion forecasting has yielded substantial performance gains on standardized benchmarks. Early work by Gao et al.~\cite{gao2020vectornet} introduced vectorized scene representations and point-level attention over polyline-encoded map elements, establishing a paradigm adopted by subsequent architectures. Scene Transformer~\cite{ngiam2022scene} extended this approach to joint multi-agent prediction, employing factored self-attention over agent and time axes to model cooperative and adversarial interactions simultaneously. These foundational architectures demonstrated that attention mechanisms could implicitly capture the spatial and social structure of traffic scenes without explicit graph construction.
+
+The Motion Transformer (MTR) family~\cite{shi2022mtr, shi2024mtrpp} introduced a query-based decoder design that has become influential in the field. MTR employs 64 learnable intention queries, initialized from clustered trajectory endpoints, which attend to encoded scene tokens through iterative cross-attention layers. This design separates \emph{global intention localization} (selecting a coarse goal region) from \emph{local movement refinement} (producing smooth trajectories conditioned on that goal), yielding strong multi-modal predictions. MTR++ extended this with symmetric scene modeling and pair-wise interaction modules, achieving first place in the 2023 Waymo Open Dataset Motion Prediction Challenge. Notably, the intention query mechanism generates structured attention patterns---each query attends to the agents and lanes relevant to its predicted mode---yet neither MTR nor MTR++ provides tools to visualize or analyze these patterns.
+
+Wayformer~\cite{nayakanti2023wayformer} explored attention-based modality fusion, comparing early, late, and hierarchical fusion strategies for combining agent trajectories, road geometry, and traffic signal features. Their ablation showed that attention over traffic light tokens significantly improves prediction at signalized intersections, hinting at the interpretive value of attention analysis. GameFormer~\cite{huang2023gameformer} introduced hierarchical game-theoretic decoding with level-$k$ attention, modeling interactive prediction as iterated best-response reasoning. HPTR~\cite{zeng2023hptr} proposed heterogeneous polyline attention with relative pose encoding and $k$-nearest-neighbor sparsification, improving efficiency while maintaining the ability to model agent--lane interactions. QCNet~\cite{zhou2023qcnet} developed query-centric encoding that avoids recomputing scene features for each target agent. Most recently, SMART~\cite{wu2024smart} recast trajectory prediction as next-token prediction over discretized motion tokens, achieving state-of-the-art results on the Waymo Sim Agents benchmark with an autoregressive Transformer.
+
+Table~\ref{tab:model_comparison} summarizes the attention mechanisms used by these models and whether any form of attention visualization or interpretability analysis was reported. As the table shows, while all models employ multiple attention mechanisms (self-attention, cross-attention, or both), none provides systematic visualization of the full attention spectrum. This gap motivates our work.
+
+\begin{table}[htbp]
+\caption{Summary of attention mechanisms in state-of-the-art trajectory prediction models. ``Viz'' indicates whether the paper includes attention visualization or interpretability analysis.}
+\label{tab:model_comparison}
+\centering
+\small
+\begin{tabular}{lcccccc}
+\toprule
+\textbf{Model} & \textbf{Venue} & \textbf{Self-Attn} & \textbf{Cross-Attn} & \textbf{Query-Based} & \textbf{Viz} \\
+\midrule
+VectorNet~\cite{gao2020vectornet}           & CVPR 2020  & \checkmark & --          & --          & --          \\
+Scene Trans.~\cite{ngiam2022scene}          & ICLR 2022  & \checkmark & --          & --          & --          \\
+MTR~\cite{shi2022mtr}                       & NeurIPS 2022 & \checkmark & \checkmark & \checkmark & --          \\
+QCNet~\cite{zhou2023qcnet}                  & CVPR 2023  & \checkmark & \checkmark & \checkmark & --          \\
+Wayformer~\cite{nayakanti2023wayformer}     & ICRA 2023  & \checkmark & \checkmark & --          & Partial     \\
+GameFormer~\cite{huang2023gameformer}       & ICCV 2023  & \checkmark & \checkmark & \checkmark & --          \\
+HPTR~\cite{zeng2023hptr}                    & NeurIPS 2023 & \checkmark & \checkmark & --          & --          \\
+MTR++~\cite{shi2024mtrpp}                   & TPAMI 2024 & \checkmark & \checkmark & \checkmark & --          \\
+SMART~\cite{wu2024smart}                  & NeurIPS 2024 & \checkmark & --          & --          & --          \\
+\midrule
+\textbf{Ours}                               & --         & \checkmark & \checkmark & \checkmark & \textbf{Full} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\subsection{Attention Visualization and Interpretability}
+
+The question of whether attention weights constitute meaningful explanations has been extensively debated in the NLP community. Jain and Wallace~\cite{jain2019attention} argued that attention distributions are not reliable indicators of feature importance, showing that alternative attention configurations can yield equivalent predictions. Wiegreffe and Pinter~\cite{wiegreffe2019attention} countered that attention weights do carry explanatory signal, particularly when the attention mechanism is constrained or task-specific. This nuanced view has informed subsequent work: attention is most interpretable when it operates over semantically meaningful units (words, objects, entities) rather than arbitrary hidden dimensions.
+
+Several tools have been developed for visualizing attention in NLP Transformers. BERTViz~\cite{vig2019bertviz} provides interactive multi-scale visualizations of attention heads across layers, revealing syntactic and semantic patterns in pre-trained language models. Abnar and Zuidema~\cite{abnar2020attention} introduced Attention Flow, which propagates attention through the residual stream to attribute model decisions to input tokens. For Vision Transformers, Chefer et al.~\cite{chefer2021transformer} combined attention rollout with gradient information to produce class-specific relevance maps that outperform raw attention in localization tasks.
+
+In the trajectory prediction domain, attention-based interpretability has received limited but growing interest. VISTA~\cite{dasilva2025vista} introduced a goal-conditioned multi-agent forecasting Transformer whose social-attention block outputs pairwise attention matrices between agents, demonstrating that the model assigns increasing attention to agents on potential collision courses. LMFormer~\cite{yadav2025lmformer} proposed a lane-aware motion prediction Transformer with Mode2Lane cross-attention in the decoder, showing that attention peaks on lanes aligned with the predicted trajectory. ISE-GT~\cite{gao2025isegt} incorporated interaction strength encoding derived from a driver resistance field model into a graph Transformer, with a companion Interaction Tendency Reasoning Module that provides post-hoc interpretability by verifying that inferred interaction tendencies align with human driver intuition.
+
+While these contributions represent important progress, they share a common limitation: each addresses a single facet of the attention spectrum. VISTA focuses exclusively on agent--agent social attention; LMFormer examines only lane-conditioned decoder attention; ISE-GT provides post-hoc interaction tendency analysis but not spatial or temporal attention patterns. None offers a unified framework that simultaneously visualizes (1)~the spatial distribution of attention across agents and lanes, (2)~the temporal evolution of attention across decoder layers, and (3)~the structural selection of lane tokens that condition trajectory generation. Our work fills this gap by providing all three visualization types within a single, integrated pipeline.
+
+
+\subsection{Counterfactual Analysis and Controllable Scene Generation}
+
+Counterfactual reasoning---asking ``what would have happened if X were different?''---provides a principled framework for causal inference in machine learning~\cite{pearl2009causality}. Goyal et al.~\cite{goyal2019counterfactual} demonstrated counterfactual visual explanations by identifying minimal image modifications that change a classifier's prediction, revealing which visual features are causally relevant. In contrast to purely observational analysis, counterfactual experiments can distinguish genuine causal mechanisms from spurious correlations.
+
+In autonomous driving, controllable scene generation has emerged as a tool for safety validation and model stress testing. SceneGen~\cite{tan2021scenegen} learned to place realistic traffic participants in BEV layouts, while TrafficSim~\cite{suo2021trafficsim} modeled multi-agent interactions through learned conditional distributions. More recently, guided diffusion models~\cite{zhong2023guided} have enabled fine-grained control over generated traffic scenarios, including adversarial agent placement and rare event synthesis. Ding et al.~\cite{ding2023survey_scenario} comprehensively reviewed methods for safety-critical scenario generation, identifying controllability and realism as the two key desiderata.
+
+Despite these advances, no prior work has combined controllable scene generation with systematic attention analysis. Existing scene generation methods focus on evaluating prediction \emph{accuracy} (i.e., whether the model predicts correctly) rather than prediction \emph{attention} (i.e., where the model looks). Our work bridges this gap: by editing real Waymo scenes---removing agents, injecting vulnerable road users, flipping traffic signals---and measuring the resulting changes in attention distributions, we perform the first \emph{counterfactual attention analysis} for trajectory prediction. This enables causal claims about how individual scene elements influence model reasoning, moving beyond correlational findings.
+
+
+\subsection{Explainable AI for Autonomous Driving}
+
+The demand for explainable AI (XAI) in autonomous driving extends beyond academic curiosity to practical necessity. Arrieta et al.~\cite{arrieta2020xai} provide a comprehensive taxonomy of XAI methods, distinguishing between transparent models (inherently interpretable), post-hoc explanations (applied after training), and hybrid approaches. For safety-critical applications like autonomous driving, they argue that post-hoc methods are insufficient; the model's internal reasoning process must be accessible and auditable.
+
+Zablocki et al.~\cite{zablocki2022xai_ad} surveyed explainability specifically in deep vision-based driving systems, identifying four key dimensions: \emph{what} is explained (perception, prediction, or planning), \emph{how} explanations are generated (saliency maps, natural language, attention), \emph{who} the audience is (developers, regulators, or passengers), and \emph{when} explanations are provided (offline analysis or real-time). Our work addresses the \emph{prediction} component using \emph{attention-based spatial visualization}, targeting both \emph{developers} (for debugging) and \emph{regulators} (for safety certification), in an \emph{offline analysis} setting.
+
+Atakishiyev et al.~\cite{atakishiyev2024xai_ad_survey} recently provided an extensive field guide for XAI research in autonomous driving, emphasizing that the gap between model performance and model understanding is the primary obstacle to large-scale deployment. They identify trajectory prediction as a particularly underserved area for interpretability research, noting that most XAI efforts in AV focus on perception (object detection saliency) or planning (reward visualization) rather than the prediction module that bridges them.
+
+From a regulatory perspective, the European Union AI Act~\cite{eu2024ai_act} classifies autonomous driving systems as ``high-risk AI'' requiring transparency, human oversight, and documented testing. The NHTSA framework~\cite{nhtsa2022framework} similarly calls for testable scenarios and explainable decision processes. These regulatory requirements create a concrete demand for the kind of interpretability tools that our framework provides: spatially grounded visualizations that can demonstrate, for a given scenario, exactly which traffic participants and road structures the model considered before generating its prediction.
+
+The connection between AV interpretability and sustainability is increasingly recognized. Taiebat et al.~\cite{taiebat2018av_sustainability} reviewed the energy and environmental implications of connected and automated vehicles, concluding that the magnitude of benefits depends heavily on the pace of adoption, which is in turn constrained by safety assurance and public trust. Litman~\cite{litman2023av_impacts} projects that full AV benefits---including a 60--90\% reduction in crash costs and a 30--50\% decrease in vehicle-miles traveled per household---will materialize only when Level~4+ autonomy achieves widespread deployment, a milestone that requires overcoming the trust deficit. By making trajectory prediction models interpretable, our work contributes to this trust-building process and, by extension, to the realization of the environmental and safety benefits that motivate sustainable transportation research.

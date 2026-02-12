@@ -1,0 +1,134 @@
+%  LaTeX support: latex@mdpi.com
+%=================================================================
+\documentclass[sustainability,article,submit,moreauthors,pdftex]{Definitions/mdpi}
+
+\firstpage{1}
+\makeatletter
+\setcounter{page}{\@firstpage}
+\makeatother
+\pubvolume{xx}
+\issuenum{1}
+\articlenumber{5}
+\pubyear{2026}
+\copyrightyear{2026}
+%\externaleditor{Academic Editor: }
+\history{Received: date; Accepted: date; Published: date}
+
+%=================================================================
+% Additional packages
+\usepackage{multirow}
+\usepackage{amsfonts}
+\usepackage{bm}
+\usepackage{booktabs}
+\usepackage{url}
+\usepackage{subcaption}
+\usepackage[ruled,vlined,linesnumbered]{algorithm2e}
+\usepackage{placeins}  % provides \FloatBarrier
+\graphicspath{{figures/}}
+
+% Define MDPI mandatory section commands if not provided by cls
+\providecommand{\dataavailability}[1]{\medskip\noindent\textbf{Data Availability Statement:} #1}
+\providecommand{\informedconsent}[1]{\medskip\noindent\textbf{Informed Consent Statement:} #1}
+
+%=================================================================
+% Title
+\Title{Spatial Attention Visualization for Interpretable Trajectory Prediction in Autonomous Driving: Discovering Safety Blind Spots Through Counterfactual Analysis}
+
+% Authors
+\Author{Xingnan Zhou $^{1}$ and Ciprian Alecsandru $^{1,}$*}
+
+\AuthorNames{Xingnan Zhou, Ciprian Alecsandru}
+
+% Affiliations
+\address{%
+$^{1}$ \quad Department of Building, Civil and Environmental Engineering, Concordia University, Montreal, QC H3G 1M8, Canada}
+
+% Corresponding author
+\corres{Correspondence: ciprian.alecsandru@concordia.ca (C.A.)}
+
+%=================================================================
+% Abstract
+\abstract{Accurate trajectory prediction is critical for autonomous driving safety and energy-efficient planning in sustainable urban mobility systems.
+While Transformer-based models achieve state-of-the-art prediction performance, their internal attention mechanisms remain opaque, hindering safety validation and regulatory compliance.
+We present a spatial attention visualization framework that maps Transformer attention weights onto bird's-eye-view traffic scenes via a novel spatial token bookkeeping mechanism, Gaussian splatting for agent tokens, and polyline painting for lane tokens.
+Using MTR-Lite, a lightweight Motion Transformer variant (8.48M parameters) trained on the Waymo Open Motion Dataset, we demonstrate the framework through systematic analysis of 100--200 validation scenes.
+Four key findings emerge: (1)~layer-wise entropy analysis reveals non-monotonic hierarchical specialization---encoder layers progressively focus on agents (entropy 5.64$\to$5.36 bits) before the final layer reverses to broad map attention (5.92 bits, 63.6\% map tokens); (2)~failed predictions exhibit ``tunnel vision'' with lower entropy (5.72 vs.\ 5.94 bits) and elevated self-attention (0.049 vs.\ 0.035); (3)~distance-decay masking shows that far-range attention encodes essential context, with even mild masking degrading accuracy by 4.7\%; and (4)~scene-type analysis confirms dynamic attention adaptation, with dense-traffic scenes allocating 42.3\% agent attention versus 18.4\% in sparse scenes.
+We further introduce a counterfactual analysis methodology using controlled scene edits to enable causal reasoning about attention allocation.
+These findings provide actionable diagnostics for model developers and regulators seeking to validate safe autonomous vehicle deployment, contributing to sustainable urban mobility.}
+
+% Keywords
+\keyword{trajectory prediction; attention visualization; Transformer; autonomous driving; explainable AI; vulnerable road users; counterfactual analysis; sustainable transportation}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\begin{document}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%=================================================================
+\section{Introduction}\label{sec:introduction}
+\input{sections/01_introduction}
+
+%=================================================================
+\section{Related Work}\label{sec:related_work}
+\input{sections/02_related_work}
+
+%=================================================================
+\section{Materials and Methods}\label{sec:method}
+\input{sections/03_methods}
+
+%=================================================================
+\section{Results}\label{sec:results}
+\input{sections/04_results}
+
+%=================================================================
+\section{Discussion}\label{sec:discussion}
+\input{sections/05_discussion}
+
+%=================================================================
+\section{Conclusions}\label{sec:conclusions}
+\input{sections/06_conclusions}
+
+\vspace{6pt}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\authorcontributions{Conceptualization, X.Z.\ and C.A.; methodology, X.Z.; software, X.Z.; validation, X.Z.; formal analysis, X.Z.; investigation, X.Z.; resources, C.A.; data curation, X.Z.; writing---original draft preparation, X.Z.; writing---review and editing, X.Z.\ and C.A.; visualization, X.Z.; supervision, C.A.; project administration, C.A. All authors have read and agreed to the published version of the manuscript.}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\funding{This research received no external funding.}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\dataavailability{The trajectory prediction models, attention extraction framework, and visualization code developed in this study are available from the corresponding author upon reasonable request. The Waymo Open Motion Dataset used for training and evaluation is publicly available at \url{https://waymo.com/open/data/motion/} under the Waymo Dataset License Agreement.}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\informedconsent{Not applicable.}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\acknowledgments{The authors acknowledge the use of the Waymo Open Motion Dataset for the experiments presented in this work. Computational resources were provided by Concordia University.}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\conflictsofinterest{The authors declare no conflict of interest.}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\abbreviations{The following abbreviations are used in this manuscript:\\
+
+\noindent
+\begin{tabular}{@{}ll}
+ADE & Average Displacement Error\\
+BEV & Bird's-Eye View\\
+BFS & Breadth-First Search\\
+FDE & Final Displacement Error\\
+MR & Miss Rate\\
+MTR & Motion Transformer\\
+NMS & Non-Maximum Suppression\\
+VRU & Vulnerable Road User\\
+WOMD & Waymo Open Motion Dataset\\
+XAI & Explainable Artificial Intelligence
+\end{tabular}}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\reftitle{References}
+
+\externalbibliography{yes}
+\bibliography{references}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\end{document}
