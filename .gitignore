@@ -36,3 +36,6 @@ logs/
 # Outputs
 demo_outputs/
 outputs/
+
+# Claude Code local config
+.claude/
