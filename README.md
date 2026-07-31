@@ -2,7 +2,7 @@
 
 **Discovering Safety Blind Spots in Transformer-Based Autonomous Driving Through Counterfactual Analysis**
 
-[![Paper](https://img.shields.io/badge/Paper-MDPI%20Sustainability-blue)](https://obsicat.com/attention-visualization.html)
+[![Paper](https://img.shields.io/badge/Paper-TRB%202027-blue)](https://obsicat.com/attention-visualization.html)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Python 3.8+](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-red.svg)](https://pytorch.org/)
@@ -61,7 +61,7 @@ spatial-attention-viz/
   experiments/      # Counterfactual scene editing framework
   scripts/          # Analysis & figure generation scripts
   configs/          # Training configurations (YAML)
-  paper/            # LaTeX source (MDPI Sustainability format)
+  paper/            # LaTeX source
   tests/            # Unit & integration tests
 ```
 
@@ -143,14 +143,13 @@ Cyclists show 88.1% miss rate vs 54.0% for vehicles, receiving 73% less self-att
 ## Citation
 
 ```bibtex
-@article{zhou2026spatial,
+@inproceedings{zhou2027spatial,
   title={Spatial Attention Visualization for Interpretable Trajectory Prediction
          in Autonomous Driving: Discovering Safety Blind Spots Through
          Counterfactual Analysis},
   author={Zhou, Xingnan and Alecsandru, Ciprian},
-  journal={Sustainability},
-  year={2026},
-  publisher={MDPI}
+  booktitle={Transportation Research Board Annual Meeting},
+  year={2027}
 }
 ```
 
