@@ -61,7 +61,6 @@ spatial-attention-viz/
   experiments/      # Counterfactual scene editing framework
   scripts/          # Analysis & figure generation scripts
   configs/          # Training configurations (YAML)
-  paper/            # LaTeX source
   tests/            # Unit & integration tests
 ```
 
